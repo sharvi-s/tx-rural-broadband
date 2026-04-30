@@ -1,6 +1,6 @@
 """
 TX Rural Broadband — Where should Texas build its next cell tower?
-Run: python dashboard.py  →  http://localhost:8050
+Run: python dashboard.py  →  http://localhost:8000
 """
 
 import numpy as np
@@ -21,64 +21,122 @@ from dash import dcc, html, Input, Output, State, dash_table
 np.random.seed(42)
 
 TX = dict(lon_min=-106.65, lon_max=-93.51, lat_min=25.84, lat_max=36.50)
-HIFLD_URL = ("https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/"
-             "Cellular_Towers/FeatureServer/0/query")
-TIGER_URL = ("https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/"
-             "tigerWMS_Current/MapServer/82/query")
+# HIFLD Open was deactivated Aug 26 2025; replaced with OpenStreetMap Overpass API
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+TIGER_URL    = ("https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/"
+                "tigerWMS_Current/MapServer/82/query")
+CENSUS_POP_URL = "https://api.census.gov/data/2020/dec/pl"  # no API key required
 
 # ── ETL ───────────────────────────────────────────────────────────────────────
+_HEADERS = {"User-Agent": "TX-Rural-Broadband/1.0 (tamu-spatial-engineering)"}
+
 def etl_towers():
+    """Fetch Texas cell/communication towers from OpenStreetMap via Overpass API.
+    HIFLD Open was permanently deactivated on Aug 26 2025.
+    """
     try:
-        r = requests.get(HIFLD_URL, params={
-            "where":"STATE='TX'","outFields":"LATITUDE,LONGITUDE,STRUCTURE_TYPE,OWNERNAME,HEIGHT,STATUS",
-            "f":"json","resultRecordCount":2000,"outSR":"4326"}, timeout=9)
-        rows=[]
-        for f in r.json().get("features",[]):
-            a=f.get("attributes",{}); g=f.get("geometry",{})
-            lat=float(a.get("LATITUDE") or g.get("y") or 0)
-            lon=float(a.get("LONGITUDE") or g.get("x") or 0)
-            if TX["lat_min"]<lat<TX["lat_max"] and TX["lon_min"]<lon<TX["lon_max"]:
-                rows.append({"lat":round(lat,5),"lon":round(lon,5),
-                             "type":a.get("STRUCTURE_TYPE","Tower") or "Tower",
-                             "owner":a.get("OWNERNAME","Unknown") or "Unknown",
-                             "height_m":a.get("HEIGHT","N/A"),
-                             "status":a.get("STATUS","Unknown") or "Unknown",
-                             "source":"HIFLD (real)"})
-        if len(rows)>100:
-            print(f"  ✔ HIFLD: {len(rows)} real towers"); return pd.DataFrame(rows), True
-    except Exception as e: print(f"  ⚠ HIFLD: {e}")
+        query = (
+            "[out:json][timeout:60];"
+            "("
+            "node[\"man_made\"=\"tower\"][\"tower:type\"=\"communication\"]"
+            "(25.84,-106.65,36.50,-93.51);"
+            "node[\"man_made\"=\"mast\"][\"tower:type\"=\"communication\"]"
+            "(25.84,-106.65,36.50,-93.51);"
+            "node[\"man_made\"=\"mast\"][\"communication:mobile_phone\"=\"yes\"]"
+            "(25.84,-106.65,36.50,-93.51);"
+            "node[\"tower:type\"=\"communication\"]"
+            "(25.84,-106.65,36.50,-93.51);"
+            ");out body;"
+        )
+        r = requests.get(OVERPASS_URL, params={"data": query},
+                         headers=_HEADERS, timeout=70)
+        elements = r.json().get("elements", [])
+        rows = []
+        for el in elements:
+            lat = el.get("lat"); lon = el.get("lon")
+            tags = el.get("tags", {})
+            if lat and lon and TX["lat_min"]<lat<TX["lat_max"] and TX["lon_min"]<lon<TX["lon_max"]:
+                rows.append({
+                    "lat":    round(lat, 5),
+                    "lon":    round(lon, 5),
+                    "type":   tags.get("tower:type", tags.get("man_made", "Tower")),
+                    "owner":  tags.get("operator",   tags.get("owner", "Unknown")),
+                    "height_m": tags.get("height", "N/A"),
+                    "status": "In Service",
+                    "source": "OpenStreetMap (Overpass API)"
+                })
+        if len(rows) > 50:
+            print(f"  ✔ Overpass/OSM: {len(rows)} towers")
+            return pd.DataFrame(rows), True
+        print(f"  ⚠ Overpass returned only {len(rows)} towers, using synthetic")
+    except Exception as e:
+        print(f"  ⚠ Overpass: {e}")
     return _syn_towers(), False
 
 def etl_counties():
+    """Fetch Texas county geometries from TIGER/Web and join 2020 Census populations.
+    TIGER/Web layer 82 does not carry POP100; populations come from Census Data API.
+    maxAllowableOffset=0.01° (~1km) dramatically reduces geometry size for fast download.
+    """
     try:
-        r = requests.get(TIGER_URL, params={
-            "where":"STATE='48'","outFields":"NAME,GEOID,POP100",
-            "f":"geojson","resultRecordCount":300,"outSR":"4326"}, timeout=9)
-        data=r.json()
-        if data.get("features") and len(data["features"])>100:
-            for f in data["features"]:
-                p=f["properties"]
-                p["population"]=int(p.get("POP100") or 0)
-                p["broadband_pct"]=round(np.random.uniform(20,88),1)
-                p["source"]="Census TIGER (real)"
-            print(f"  ✔ Census TIGER: {len(data['features'])} counties"); return data, True
-    except Exception as e: print(f"  ⚠ Census TIGER: {e}")
+        # 1. County geometries from TIGER/Web (layer 82 = Counties, Jan 2025 vintage)
+        r_geo = requests.get(TIGER_URL, params={
+            "where":              "STATE='48'",
+            "outFields":          "GEOID,NAME,INTPTLAT,INTPTLON,AREALAND",
+            "f":                  "geojson",
+            "resultRecordCount":  300,
+            "outSR":              "4326",
+            "maxAllowableOffset": 0.01,  # simplify polygons ~1km tolerance
+        }, headers=_HEADERS, timeout=60)
+        geo_data = r_geo.json()
+
+        # 2. County populations from Census 2020 Decennial API (no key required)
+        r_pop = requests.get(CENSUS_POP_URL, params={
+            "get": "NAME,P1_001N",
+            "for": "county:*",
+            "in":  "state:48"
+        }, headers=_HEADERS, timeout=30)
+        pop_rows = r_pop.json()          # [[header], [row], ...]
+        pop_dict = {"48" + row[3]: int(row[1]) for row in pop_rows[1:]}
+
+        if geo_data.get("features") and len(geo_data["features"]) > 100:
+            _bband_rng = np.random.RandomState(42)   # isolated seed for broadband_pct
+            for f in geo_data["features"]:
+                p = f["properties"]
+                geoid = p.get("GEOID", "")
+                p["population"]    = pop_dict.get(geoid, 3000)
+                p["broadband_pct"] = round(_bband_rng.uniform(18, 90), 1)
+                p["source"]        = "Census TIGER + Census 2020"
+            print(f"  ✔ Census TIGER + Census API: {len(geo_data['features'])} counties")
+            return geo_data, True
+    except Exception as e:
+        print(f"  ⚠ Census: {e}")
     return _syn_counties(), False
 
 # ── MCLP ──────────────────────────────────────────────────────────────────────
 def run_mclp(towers_df, counties_gj, radius_km=10, n_sites=3, grid_n=40):
     radius_deg = radius_km/111.0
-    demand_pts,demand_pops,names=[],[],[]
+    demand_pts, demand_pops, names = [], [], []
     for f in counties_gj["features"]:
-        cs=f["geometry"]["coordinates"][0]
-        demand_pts.append([np.mean([c[0] for c in cs]),np.mean([c[1] for c in cs])])
-        demand_pops.append(f["properties"].get("population",3000))
-        names.append(f["properties"].get("NAME","?"))
+        p = f["properties"]
+        # Prefer official TIGER internal-point coords over mean-of-ring approximation
+        if "INTPTLAT" in p and "INTPTLON" in p:
+            clat = float(p["INTPTLAT"]); clon = float(p["INTPTLON"])
+        else:
+            cs = f["geometry"]["coordinates"][0]
+            clon = np.mean([c[0] for c in cs]); clat = np.mean([c[1] for c in cs])
+        demand_pts.append([clon, clat])
+        demand_pops.append(p.get("population", 3000))
+        names.append(p.get("NAME", p.get("BASENAME", "?")))
     D=np.array(demand_pts); P=np.array(demand_pops,dtype=float)
     T=towers_df[["lon","lat"]].values
+    # Vectorised coverage: process towers in chunks to avoid 13k-iteration Python loop
     covered=np.zeros(len(D),dtype=bool)
-    for tlon,tlat in T:
-        covered|=np.sqrt((D[:,0]-tlon)**2+(D[:,1]-tlat)**2)<=radius_deg
+    CHUNK=500
+    for i in range(0, len(T), CHUNK):
+        chunk=T[i:i+CHUNK]                     # (chunk, 2)
+        dists=np.sqrt(((D[:,None,:]-chunk[None,:,:])**2).sum(axis=2))  # (n_demand, chunk)
+        covered|=dists.min(axis=1)<=radius_deg
     remaining=list(np.where(~covered)[0])
     total_unserved=float(P[remaining].sum())
     can_lons=np.linspace(TX["lon_min"]+0.5,TX["lon_max"]-0.5,grid_n)
@@ -863,6 +921,6 @@ def update(sites_json, radius):
 
 if __name__ == "__main__":
     print("="*50)
-    print("  → http://localhost:8050")
+    print("  → http://localhost:8000")
     print("="*50)
-    app.run(debug=False, port=8050, host="0.0.0.0")
+    app.run(debug=False, port=8000, host="0.0.0.0")
