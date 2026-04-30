@@ -31,9 +31,9 @@ pip install -r requirements.txt
 python dashboard.py
 ```
 
-Then open **http://localhost:8050** in your browser.
+Then open **http://localhost:8000** in your browser.
 
-> **Note:** The app attempts to fetch live data from two government APIs on startup. If either is unavailable, it automatically falls back to synthetic data that mirrors the real schema.
+> **Note:** The app attempts to fetch live data from external APIs on startup. If unavailable, it automatically falls back to synthetic data that mirrors the real schema.
 
 ---
 
@@ -41,11 +41,11 @@ Then open **http://localhost:8050** in your browser.
 
 | Layer | Source |
 |---|---|
-| Cell towers | [HIFLD Open Data (DHS/CISA)](https://hifld-geoplatform.opendata.arcgis.com/datasets/cellular-towers) |
-| County boundaries & population | [Census TIGER/Web](https://tigerweb.geo.census.gov/) |
+| Cell towers | [OpenStreetMap Overpass API](https://overpass-api.de/) *(HIFLD Open deactivated Aug 2025)* |
+| County boundaries & population | [Census TIGER/Web](https://tigerweb.geo.census.gov/) & [Census 2020 API](https://api.census.gov/) |
 | Broadband access % | FCC BDC *(synthetic placeholder — swap in real values)* |
 
-All sources are U.S. government open data / public domain.
+**Licensing:** OpenStreetMap data is available under the [Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/). Census data is U.S. government public domain.
 
 ---
 
