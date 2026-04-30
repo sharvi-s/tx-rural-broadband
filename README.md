@@ -1,4 +1,4 @@
-# TX Rural Broadband - Cell Tower Placement Optimizer
+# TX Rural Broadband -- Cell Tower Placement Optimizer
 
 An interactive spatial analysis dashboard that maps broadband dead zones across Texas and uses a **Maximum Covering Location Problem (MCLP)** optimizer to identify where new cell towers would serve the most unserved residents.
 
